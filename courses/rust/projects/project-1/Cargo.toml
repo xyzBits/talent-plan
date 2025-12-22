@@ -1,13 +1,24 @@
+# 项目元数据
 [package]
+# 包名，测试用例会根据此名称链接库
 name = "kvs"
+# 语义化版本号
 version = "0.1.0"
+# 作者信息，格式为 Name <email>
 authors = ["Yilin Chen <sticnarf@gmail.com>"]
+# 项目简要描述，供 crates.io 展示
 description = "A key-value store"
+# 使用的 Rust edition
 edition = "2018"
 
+# 项目依赖
 [dependencies]
+# 用于解析命令行参数的库，使用 2.x 系列的最新稳定版
 clap = "2.32.0"
 
+# 开发时依赖（仅用于测试）
 [dev-dependencies]
+# 用于在测试中调用二进制文件的辅助库
 assert_cmd = "0.11.0"
+# 用于编写断言表达式的库
 predicates = "1.0.0"
