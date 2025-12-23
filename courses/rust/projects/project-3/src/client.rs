@@ -5,14 +5,14 @@ use serde_json::de::{Deserializer, IoRead};
 use std::io::{BufReader, BufWriter, Write};
 use std::net::{TcpStream, ToSocketAddrs};
 
-/// Key value store client
+/// 键值存储客户端。
 pub struct KvsClient {
     reader: Deserializer<IoRead<BufReader<TcpStream>>>,
     writer: BufWriter<TcpStream>,
 }
 
 impl KvsClient {
-    /// Connect to `addr` to access `KvsServer`.
+    /// 连接到指定的地址以访问 `KvsServer`。
     pub fn connect<A: ToSocketAddrs>(addr: A) -> Result<Self> {
         let tcp_reader = TcpStream::connect(addr)?;
         let tcp_writer = tcp_reader.try_clone()?;
@@ -22,7 +22,7 @@ impl KvsClient {
         })
     }
 
-    /// Get the value of a given key from the server.
+    /// 从服务端获取给定键的值。
     pub fn get(&mut self, key: String) -> Result<Option<String>> {
         serde_json::to_writer(&mut self.writer, &Request::Get { key })?;
         self.writer.flush()?;
@@ -33,7 +33,7 @@ impl KvsClient {
         }
     }
 
-    /// Set the value of a string key in the server.
+    /// 在服务端设置字符串键的值。
     pub fn set(&mut self, key: String, value: String) -> Result<()> {
         serde_json::to_writer(&mut self.writer, &Request::Set { key, value })?;
         self.writer.flush()?;
@@ -44,7 +44,7 @@ impl KvsClient {
         }
     }
 
-    /// Remove a string key in the server.
+    /// 在服务端删除一个字符串键。
     pub fn remove(&mut self, key: String) -> Result<()> {
         serde_json::to_writer(&mut self.writer, &Request::Remove { key })?;
         self.writer.flush()?;

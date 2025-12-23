@@ -13,11 +13,11 @@ use std::ffi::OsStr;
 
 const COMPACTION_THRESHOLD: u64 = 1024 * 1024;
 
-/// The `KvStore` stores string key/value pairs.
+/// `KvStore` 存储字符串类型的键值对。
 ///
-/// Key/value pairs are persisted to disk in log files. Log files are named after
-/// monotonically increasing generation numbers with a `log` extension name.
-/// A `BTreeMap` in memory stores the keys and the value locations for fast query.
+/// 键值对以日志文件的形式持久化到磁盘中。日志文件以单调递增的代数 (generation) 命名，
+/// 并使用 `.log` 作为扩展名。
+/// 内存中的 `BTreeMap` 存储键及其在日志中的位置，以便实现快速查询。
 ///
 /// ```rust
 /// # use kvs::{KvStore, Result};
@@ -32,27 +32,29 @@ const COMPACTION_THRESHOLD: u64 = 1024 * 1024;
 /// # }
 /// ```
 pub struct KvStore {
-    // directory for the log and other data
+    // 存储日志和其他数据的目录
     path: PathBuf,
-    // map generation number to the file reader
+    // 将代数映射到文件读取器，用于从不同代数的日志中读取数据
     readers: HashMap<u64, BufReaderWithPos<File>>,
-    // writer of the current log
+    // 当前正在写入的日志文件的写入器
     writer: BufWriterWithPos<File>,
+    // 当前最新的代数
     current_gen: u64,
+    // 内存索引，存储键到其在日志中对应位置的映射
     index: BTreeMap<String, CommandPos>,
-    // the number of bytes representing "stale" commands that could be
-    // deleted during a compaction
+    // 未压缩的字节数，即代表“陈旧”命令（可被删除）的字节数。
+    // 用于触发压缩。
     uncompacted: u64,
 }
 
 impl KvStore {
-    /// Opens a `KvStore` with the given path.
+    /// 在给定路径下打开一个 `KvStore`。
     ///
-    /// This will create a new directory if the given one does not exist.
+    /// 如果目录不存在，则创建一个新目录。
     ///
-    /// # Errors
+    /// # 错误
     ///
-    /// It propagates I/O or deserialization errors during the log replay.
+    /// 传播在日志重放期间发生的 I/O 或反序列化错误。
     pub fn open(path: impl Into<PathBuf>) -> Result<KvStore> {
         let path = path.into();
         fs::create_dir_all(&path)?;
@@ -60,15 +62,18 @@ impl KvStore {
         let mut readers = HashMap::new();
         let mut index = BTreeMap::new();
 
+        // 获取已有的代数列表
         let gen_list = sorted_gen_list(&path)?;
         let mut uncompacted = 0;
 
+        // 通过重放日志来重建索引
         for &gen in &gen_list {
             let mut reader = BufReaderWithPos::new(File::open(log_path(&path, gen))?)?;
             uncompacted += load(gen, &mut reader, &mut index)?;
             readers.insert(gen, reader);
         }
 
+        // 下一次可用的代数为最大代数 + 1
         let current_gen = gen_list.last().unwrap_or(&0) + 1;
         let writer = new_log_file(&path, current_gen, &mut readers)?;
 
@@ -82,16 +87,21 @@ impl KvStore {
         })
     }
 
-    /// Clears stale entries in the log.
+    /// 清理日志中的陈旧条目。
+    ///
+    /// 压缩过程会将索引中引用的所有当前有效命令写入一个新的代数文件中，
+    /// 然后删除旧的、不再被引用的日志文件。
     pub fn compact(&mut self) -> Result<()> {
-        // increase current gen by 2. current_gen + 1 is for the compaction file
+        // 增加当前代数 2。这里 current_gen + 1 用于存放压缩后的新文件，
+        // current_gen + 2 则作为新的活动写入日志。
         let compaction_gen = self.current_gen + 1;
         self.current_gen += 2;
         self.writer = self.new_log_file(self.current_gen)?;
 
         let mut compaction_writer = self.new_log_file(compaction_gen)?;
 
-        let mut new_pos = 0; // pos in the new log file
+        let mut new_pos = 0; // 在新日志文件中的偏移量
+        // 遍历所有索引，只将最新的、活跃的值搬迁到新日志
         for cmd_pos in &mut self.index.values_mut() {
             let reader = self
                 .readers
@@ -103,12 +113,14 @@ impl KvStore {
 
             let mut entry_reader = reader.take(cmd_pos.len);
             let len = io::copy(&mut entry_reader, &mut compaction_writer)?;
+            // 更新索引指向新的压缩代数及其偏移量
             *cmd_pos = (compaction_gen, new_pos..new_pos + len).into();
             new_pos += len;
         }
         compaction_writer.flush()?;
 
-        // remove stale log files
+        // 删除陈旧的日志文件。由于所有有效数据都已搬迁到 compaction_gen，
+        // 任何小于 compaction_gen 的文件现在都是陈旧的。
         let stale_gens: Vec<_> = self
             .readers
             .keys()
@@ -134,19 +146,21 @@ impl KvStore {
 }
 
 impl KvsEngine for KvStore {
-    /// Sets the value of a string key to a string.
+    /// 设置给定字符串键的值为字符串。
     ///
-    /// If the key already exists, the previous value will be overwritten.
+    /// 如果键已存在，则之前的值将被覆盖。
     ///
-    /// # Errors
+    /// # 错误
     ///
-    /// It propagates I/O or serialization errors during writing the log.
+    /// 如果日志写入失败，则传播 I/O 或序列化错误。
     fn set(&mut self, key: String, value: String) -> Result<()> {
         let cmd = Command::set(key, value);
         let pos = self.writer.pos;
+        // 顺序写入日志文件
         serde_json::to_writer(&mut self.writer, &cmd)?;
         self.writer.flush()?;
         if let Command::Set { key, .. } = cmd {
+            // 在内存索引中更新位置，如果覆盖了旧值，累加未压缩字节数
             if let Some(old_cmd) = self
                 .index
                 .insert(key, (self.current_gen, pos..self.writer.pos).into())
@@ -155,21 +169,23 @@ impl KvsEngine for KvStore {
             }
         }
 
+        // 检查是否达到压缩阈值
         if self.uncompacted > COMPACTION_THRESHOLD {
             self.compact()?;
         }
         Ok(())
     }
 
-    /// Gets the string value of a given string key.
+    /// 获取给定键的值。
     ///
-    /// Returns `None` if the given key does not exist.
+    /// 如果键不存在，则返回 `None`。
     fn get(&mut self, key: String) -> Result<Option<String>> {
         if let Some(cmd_pos) = self.index.get(&key) {
             let reader = self
                 .readers
                 .get_mut(&cmd_pos.gen)
                 .expect("Cannot find log reader");
+            // 定位到日志中存储该命令的位置
             reader.seek(SeekFrom::Start(cmd_pos.pos))?;
             let cmd_reader = reader.take(cmd_pos.len);
             if let Command::Set { value, .. } = serde_json::from_reader(cmd_reader)? {
@@ -182,19 +198,21 @@ impl KvsEngine for KvStore {
         }
     }
 
-    /// Removes a given key.
+    /// 移除给定键。
     ///
     /// # Error
     ///
-    /// It returns `KvsError::KeyNotFound` if the given key is not found.
+    /// 如果键未找到，返回 `KvsError::KeyNotFound`。
     ///
-    /// It propagates I/O or serialization errors during writing the log.
+    /// 如果日志写入失败，则传播 I/O 或序列化错误。
     fn remove(&mut self, key: String) -> Result<()> {
         if self.index.contains_key(&key) {
             let cmd = Command::remove(key);
+            // 写入一个 Remove 命令到日志，这是为了确保磁盘状态也能同步记录删除操作
             serde_json::to_writer(&mut self.writer, &cmd)?;
             self.writer.flush()?;
             if let Command::Remove { key } = cmd {
+                // 从内存索引中删除，原来的存储空间现在变成了陈旧空间
                 let old_cmd = self.index.remove(&key).expect("key not found");
                 self.uncompacted += old_cmd.len;
             }

@@ -25,4 +25,12 @@ walkdir = "2.2.7"
 
 [[bench]]
 name = "engine_bench"
-harness = false
+harness = false # 关闭默认的测试 harness，使用 Criterion 的
+
+[[bench]]
+name = "fib_bench"
+harness = false # 关闭默认的测试 harness，使用 Criterion 的
+
+[[bench]]
+name = "engine_compare"
+harness = false # 关闭默认的测试 harness，使用 Criterion 的

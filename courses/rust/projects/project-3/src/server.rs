@@ -5,18 +5,18 @@ use serde_json::Deserializer;
 use std::io::{BufReader, BufWriter, Write};
 use std::net::{TcpListener, TcpStream, ToSocketAddrs};
 
-/// The server of a key value store.
+/// 键值存储服务器。
 pub struct KvsServer<E: KvsEngine> {
     engine: E,
 }
 
 impl<E: KvsEngine> KvsServer<E> {
-    /// Create a `KvsServer` with a given storage engine.
+    /// 使用指定的存储引擎创建一个 `KvsServer`。
     pub fn new(engine: E) -> Self {
         KvsServer { engine }
     }
 
-    /// Run the server listening on the given address
+    /// 在给定地址上运行服务器并进行监听。
     pub fn run<A: ToSocketAddrs>(mut self, addr: A) -> Result<()> {
         let listener = TcpListener::bind(addr)?;
         for stream in listener.incoming() {

@@ -7,6 +7,7 @@ use structopt::StructOpt;
 const DEFAULT_LISTENING_ADDRESS: &str = "127.0.0.1:4000";
 const ADDRESS_FORMAT: &str = "IP:PORT";
 
+/// kvs-client 的命令行参数结构
 #[derive(StructOpt, Debug)]
 #[structopt(
     name = "kvs-client",
@@ -15,16 +16,21 @@ const ADDRESS_FORMAT: &str = "IP:PORT";
                            AppSettings::VersionlessSubcommands]")
 )]
 struct Opt {
+    /// 具体的子命令
     #[structopt(subcommand)]
     command: Command,
 }
 
+/// kvs-client 支持的子命令
 #[derive(StructOpt, Debug)]
 enum Command {
+    /// 获取给定键的值
     #[structopt(name = "get", about = "Get the string value of a given string key")]
     Get {
+        /// 键名称
         #[structopt(name = "KEY", help = "A string key")]
         key: String,
+        /// 服务器地址
         #[structopt(
             long,
             help = "Sets the server address",
@@ -34,12 +40,16 @@ enum Command {
         )]
         addr: SocketAddr,
     },
+    /// 设置给定键的值
     #[structopt(name = "set", about = "Set the value of a string key to a string")]
     Set {
+        /// 键名称
         #[structopt(name = "KEY", help = "A string key")]
         key: String,
+        /// 值名称
         #[structopt(name = "VALUE", help = "The string value of the key")]
         value: String,
+        /// 服务器地址
         #[structopt(
             long,
             help = "Sets the server address",
@@ -49,10 +59,13 @@ enum Command {
         )]
         addr: SocketAddr,
     },
+    /// 移除给定的键
     #[structopt(name = "rm", about = "Remove a given string key")]
     Remove {
+        /// 键名称
         #[structopt(name = "KEY", help = "A string key")]
         key: String,
+        /// 服务器地址
         #[structopt(
             long,
             help = "Sets the server address",

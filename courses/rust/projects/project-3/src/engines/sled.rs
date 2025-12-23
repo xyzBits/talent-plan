@@ -2,12 +2,12 @@ use super::KvsEngine;
 use crate::{KvsError, Result};
 use sled::{Db, Tree};
 
-/// Wrapper of `sled::Db`
+/// `sled::Db` 的包装类。
 #[derive(Clone)]
 pub struct SledKvsEngine(Db);
 
 impl SledKvsEngine {
-    /// Creates a `SledKvsEngine` from `sled::Db`.
+    /// 从 `sled::Db` 创建一个 `SledKvsEngine`。
     pub fn new(db: Db) -> Self {
         SledKvsEngine(db)
     }

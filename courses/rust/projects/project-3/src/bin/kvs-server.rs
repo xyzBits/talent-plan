@@ -11,9 +11,11 @@ use structopt::StructOpt;
 const DEFAULT_LISTENING_ADDRESS: &str = "127.0.0.1:4000";
 const DEFAULT_ENGINE: Engine = Engine::kvs;
 
+/// kvs-server 的命令行参数结构
 #[derive(StructOpt, Debug)]
 #[structopt(name = "kvs-server")]
 struct Opt {
+    /// 设置监听地址
     #[structopt(
         long,
         help = "Sets the listening address",
@@ -22,6 +24,7 @@ struct Opt {
         parse(try_from_str)
     )]
     addr: SocketAddr,
+    /// 设置存储引擎
     #[structopt(
         long,
         help = "Sets the storage engine",
@@ -41,12 +44,15 @@ arg_enum! {
 }
 
 fn main() {
+    // 设置日志记录
     env_logger::builder().filter_level(LevelFilter::Info).init();
     let mut opt = Opt::from_args();
+    // 检查并确保存储引擎的一致性
     let res = current_engine().and_then(move |curr_engine| {
         if opt.engine.is_none() {
             opt.engine = curr_engine;
         }
+        // 如果之前已经选择了某种引擎，则本次启动必须使用相同的引擎，否则报错
         if curr_engine.is_some() && opt.engine != curr_engine {
             error!("Wrong engine!");
             exit(1);

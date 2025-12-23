@@ -2,23 +2,23 @@
 
 use crate::Result;
 
-/// Trait for a key value storage engine.
+/// 定义存储引擎的通用接口。
 pub trait KvsEngine {
-    /// Sets the value of a string key to a string.
+    /// 设置给定字符串键的值为字符串。
     ///
-    /// If the key already exists, the previous value will be overwritten.
+    /// 如果该键已存在，则覆盖旧值。
     fn set(&mut self, key: String, value: String) -> Result<()>;
 
-    /// Gets the string value of a given string key.
+    /// 获取给定字符串键的字符串值。
     ///
-    /// Returns `None` if the given key does not exist.
+    /// 如果键不存在，则返回 `None`。
     fn get(&mut self, key: String) -> Result<Option<String>>;
 
-    /// Removes a given key.
+    /// 删除指定的键。
     ///
-    /// # Errors
+    /// # 错误
     ///
-    /// It returns `KvsError::KeyNotFound` if the given key is not found.
+    /// 如果键不存在，则返回 `KvsError::KeyNotFound`。
     fn remove(&mut self, key: String) -> Result<()>;
 }
 
