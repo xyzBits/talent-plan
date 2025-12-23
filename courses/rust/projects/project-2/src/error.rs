@@ -1,20 +1,20 @@
 use failure::Fail;
 use std::io;
 
-/// Error type for kvs.
+/// kvs 项目的错误类型。
 #[derive(Fail, Debug)]
 pub enum KvsError {
-    /// IO error.
+    /// IO 错误。
     #[fail(display = "{}", _0)]
     Io(#[cause] io::Error),
-    /// Serialization or deserialization error.
+    /// 序列化或反序列化错误。
     #[fail(display = "{}", _0)]
     Serde(#[cause] serde_json::Error),
-    /// Removing non-existent key error.
+    /// 移除不存在的键。
     #[fail(display = "Key not found")]
     KeyNotFound,
-    /// Unexpected command type error.
-    /// It indicated a corrupted log or a program bug.
+    /// 意外的命令类型。
+    /// 这可能表示日志文件损坏或程序存在错误。
     #[fail(display = "Unexpected command type")]
     UnexpectedCommandType,
 }
@@ -31,5 +31,5 @@ impl From<serde_json::Error> for KvsError {
     }
 }
 
-/// Result type for kvs.
+/// kvs 项目的 Result 类型。
 pub type Result<T> = std::result::Result<T, KvsError>;

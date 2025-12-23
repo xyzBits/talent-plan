@@ -4,6 +4,7 @@ use std::env::current_dir;
 use std::process::exit;
 
 fn main() -> Result<()> {
+    // 配置命令行参数
     let matches = App::new(env!("CARGO_PKG_NAME"))
         .version(env!("CARGO_PKG_VERSION"))
         .author(env!("CARGO_PKG_AUTHORS"))
@@ -13,26 +14,27 @@ fn main() -> Result<()> {
         .setting(AppSettings::VersionlessSubcommands)
         .subcommand(
             SubCommand::with_name("set")
-                .about("Set the value of a string key to a string")
-                .arg(Arg::with_name("KEY").help("A string key").required(true))
+                .about("设置一个字符串键的值")
+                .arg(Arg::with_name("KEY").help("字符串键").required(true))
                 .arg(
                     Arg::with_name("VALUE")
-                        .help("The string value of the key")
+                        .help("该键对应的字符串值")
                         .required(true),
                 ),
         )
         .subcommand(
             SubCommand::with_name("get")
-                .about("Get the string value of a given string key")
-                .arg(Arg::with_name("KEY").help("A string key").required(true)),
+                .about("获取给定字符串键的值")
+                .arg(Arg::with_name("KEY").help("字符串键").required(true)),
         )
         .subcommand(
             SubCommand::with_name("rm")
-                .about("Remove a given key")
-                .arg(Arg::with_name("KEY").help("A string key").required(true)),
+                .about("移除给定的键")
+                .arg(Arg::with_name("KEY").help("字符串键").required(true)),
         )
         .get_matches();
 
+    // 根据子命令执行相应操作
     match matches.subcommand() {
         ("set", Some(matches)) => {
             let key = matches.value_of("KEY").unwrap();
