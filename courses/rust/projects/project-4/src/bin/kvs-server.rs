@@ -47,6 +47,15 @@ fn main() {
         .filter_level(LevelFilter::Info)
         .init();
     let mut opt = Opt::from_args();
+    // 详细中文注释（补充）：
+    // 1. 入口流程概览：
+    //    - 使用 `StructOpt`/`clap` 解析命令行参数（监听地址和存储引擎），然后根据配置选择存储引擎并运行服务器。
+    //    - 将选定的 engine 写入当前目录下的 `engine` 文件，供后续运行或调试参考。
+    // 2. 关于 `Engine` 选择与兼容性：
+    //    - 程序在不同次启动之间不允许随意切换 engine（如果 `engine` 文件存在且与当前运行时选项不一致，则退出）。
+    //    - 这是为了避免不同引擎在同一目录下写入互不兼容的数据文件从而导致数据损坏。
+    // 3. 日志与调试：
+    //    - 使用 `env_logger` 并设置 `Info` 级别，允许通过环境变量调整日志级别以便调试。
     let res = current_engine().and_then(move |curr_engine| {
         if opt.engine.is_none() {
             opt.engine = curr_engine;

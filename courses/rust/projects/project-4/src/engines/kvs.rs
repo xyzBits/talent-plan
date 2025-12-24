@@ -52,6 +52,24 @@ pub struct KvStore {
     writer: Arc<Mutex<KvStoreWriter>>,
 }
 
+// 详细中文注释（补充）：
+// 设计背景与总体说明：
+// 1) 存储模型：本实现采用 Log-Structured 的设计思想——
+//    所有变更都追加写到日志文件（按 generation 编号），读取通过内存索引定位到磁盘上的位置然后读取对应字节区间。
+// 2) 并发与同步策略：
+//    - 读取路径尽量无锁：使用 `SkipMap`（并发跳表）作为内存索引，支持并发读访问，减少锁竞争。
+//    - 写入路径串行化：所有写操作都通过 `KvStoreWriter` 串行化执行（由 `Arc<Mutex<KvStoreWriter>>` 保护），保证 append 写入的顺序性与一致性。
+//    - 这种 "读无锁、写串行" 的模式在很多键值存储中被采用，因为写入需要维护磁盘上的顺序语义，而读取是高频操作。
+// 3) 恢复与可靠性：
+//    - 启动时会扫描现有日志（`sorted_gen_list` + `load`），通过重放日志重建内存索引（index），从而实现崩溃恢复与持久性保证。
+// 4) 空间回收（压缩/compaction）：
+//    - 当日志中存在大量被覆盖或删除的旧记录时，会触发 `compact()`，将当前有效的数据搬运到新的代数文件中，删除旧文件以释放磁盘空间。
+//    - `KvStoreReader` 与 `safe_point` 协同工作：在压缩期间，reader 会通过 `safe_point` 判断哪些文件句柄可以关闭，从而避免并发读取时访问已删除文件。
+// 5) 对 Rust 新手的阅读建议：
+//    - 先关注 `set/get/remove` 的高层逻辑（在 `impl KvsEngine for KvStore` 中）。
+//    - 理解 `KvStoreWriter` 和 `KvStoreReader` 的职责分离：writer 负责写入与 compaction，reader 负责按需打开/读取文件。
+//    - `Arc`/`Mutex`/`RefCell`/`SkipMap` 是关键的并发原语，分别用于跨线程共享、互斥串行化、内部可变性和并发索引。
+
 impl KvStore {
     /// Opens a `KvStore` with the given path.
     ///
@@ -163,6 +181,14 @@ impl KvsEngine for KvStore {
 /// `KvStoreReader`s open the same files separately. So the user
 /// can read concurrently through multiple `KvStore`s in different
 /// threads.
+// 详细中文注释（补充）：
+// KvStoreReader 的目的与行为：
+// - 每个 `KvStore` 实例包含一个 `KvStoreReader`，用于按需打开并复用文件句柄以便读取日志中的命令。
+// - `KvStoreReader` 内部使用 `RefCell<BTreeMap<u64, BufReaderWithPos<File>>>` 缓存已经打开的文件句柄，避免频繁 open/close。
+// - `safe_point` 表示最近一次 compaction 生成的代数（generation），当某个文件的代数小于 `safe_point` 时，意味着该文件已经是陈旧的，
+//   可以在保证没有并发读取的前提下关闭对应句柄并删除物理文件（在 Windows 上文件删除需要句柄释放后才能完成）。
+// - 设计要点：读取路径要尽量避免阻塞写路径，`KvStoreReader` 的 `read_and` 方法采用借用（borrow_mut）打开/复用句柄并定位到指定偏移再读取固定长度，
+//   从而保证读取的局部性和效率。
 struct KvStoreReader {
     // arc 共享所有权，共享路径对象
     path: Arc<PathBuf>,
@@ -186,13 +212,23 @@ impl KvStoreReader {
     /// The compaction generation contains the sum of all operations before it and the
     /// in-memory index contains no entries with generation number less than safe_point.
     /// So we can safely close those file handles and the stale files can be deleted.
+    /// 关闭交移除那些已经被压缩过的，过期的文件handler，防止 handler 泄露
+    /// bitcask 中，执行 compact 后，旧文件中的有效数据搬到新的，
+    /// 更新水位，全局变量 safe_point 更新为3，id < 3的都是垃圾
+    ///
     fn close_stale_handles(&self) {
+        // 获取写锁，RefCell
+        // 要从map 中删除元素，所以需要可变借用
         let mut readers = self.readers.borrow_mut();
+
         while !readers.is_empty() {
+            // 拿出 map 中id 最小的言论的 id,BTreemap 是有序的，next 返回的永远是最小的
             let first_gen = *readers.keys().next().unwrap();
             if self.safe_point.load(Ordering::SeqCst) <= first_gen {
                 break;
             }
+
+            // remove 会 drop file 对象
             readers.remove(&first_gen);
         }
     }
@@ -202,6 +238,7 @@ impl KvStoreReader {
     where
         // 定义闭包类型，接收一个受限的文件流，返回任意结果 R
         // read_and 不关心读出来的数据做什么，只读
+        // io::Take 划定安全边界，防止多读
         F: FnOnce(io::Take<&mut BufReaderWithPos<File>>) -> Result<R>,
     {
         // 清理过期文件句柄，如果有压缩发生
@@ -251,6 +288,15 @@ impl Clone for KvStoreReader {
     }
 }
 
+// 详细中文注释（补充）：
+// KvStoreWriter 的职责与重要设计点：
+// - 负责将 `set`/`remove` 命令序列化并追加写入当前代数日志文件，维护 `index`（内存索引）以及记录 `uncompacted` 大小。
+// - 写入必须串行：因此 `KvStoreWriter` 被放在 `Arc<Mutex<...>>` 之内，外部在执行 `set`/`remove` 时会获取互斥锁，
+//   保证不会同时有多个写线程破坏日志顺序或索引一致性。
+// - `uncompacted`：统计可以回收的“垃圾”字节数（旧的被覆盖或删除的记录占用的空间），用来触发 `compact()`。
+// - `compact()`：将当前 index 指向的有效数据搬运到新的 compaction 文件中，更新 index 并删除旧日志文件，释放空间。
+// - 关于为什么读写分离：读者通过 `KvStoreReader` 使用 `SkipMap` 无锁读取索引并定位到磁盘位置，然后直接读磁盘数据；写操作走串行化路径，避免了复杂的并发控制。
+// - 对新手的提示：保证 `KvStoreWriter` 的操作尽量短小（快速 append + flush），避免在持锁期间做大量 CPU 或阻塞 IO 操作，以减少对读操作的影响。
 struct KvStoreWriter {
     reader: KvStoreReader,
     writer: BufWriterWithPos<File>,
