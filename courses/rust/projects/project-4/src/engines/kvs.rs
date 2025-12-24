@@ -41,8 +41,14 @@ pub struct KvStore {
     // directory for the log and other data
     path: Arc<PathBuf>,
     // map generation number to the file reader
+    // skipMap 提供高并发的全局无锁访问，减少锁的竞争，也可以按顺序遍历
+    // ConcurrentSkipListMap
     index: Arc<SkipMap<String, CommandPos>>,
+    // 外部 get 调用时使用，读取文件
     reader: KvStoreReader,
+
+    // 写入必须是串行的，所以要回销 读：走index + reader 无锁 ，写 走writer 互斥锁，串行化
+    // 里面的 reader 在 压缩时使用
     writer: Arc<Mutex<KvStoreWriter>>,
 }
 
@@ -54,11 +60,17 @@ impl KvStore {
     /// # Errors
     ///
     /// It propagates I/O or deserialization errors during the log replay.
+    /// 组装 文件、内存索引 、读写器
+    /// 组装过程中，构建好线程安全和并发隔离的基础设施
     pub fn open(path: impl Into<PathBuf>) -> Result<KvStore> {
         let path = Arc::new(path.into());
+        // let buf: PathBuf = *path;
+        // fs::create_dir_all(path.as_ref())?;
         fs::create_dir_all(&*path)?;
 
         let mut readers = BTreeMap::new();
+
+        // skipMap 允许无锁并发读取
         let index = Arc::new(SkipMap::new());
 
         let gen_list = sorted_gen_list(&path)?;
@@ -67,10 +79,14 @@ impl KvStore {
         for &gen in &gen_list {
             let mut reader = BufReaderWithPos::new(File::open(log_path(&path, gen))?)?;
             uncompacted += load(gen, &mut reader, &*index)?;
+
+            // 历史文件的读取器都缓存 起来
             readers.insert(gen, reader);
         }
 
         let current_gen = gen_list.last().unwrap_or(&0) + 1;
+
+        // 旧文件只读，不能写入，所以每次重启都生成新的
         let writer = new_log_file(&path, current_gen)?;
         let safe_point = Arc::new(AtomicU64::new(0));
 
@@ -81,8 +97,8 @@ impl KvStore {
         };
 
         let writer = KvStoreWriter {
-            reader: reader.clone(),
-            writer,
+            reader: reader.clone(),// writer 中也装了一个 reader ，因为在压缩时，要使用reader读取旧数据
+            writer,// 当前需要写的
             current_gen,
             uncompacted,
             path: Arc::clone(&path),
@@ -107,6 +123,7 @@ impl KvsEngine for KvStore {
     ///
     /// It propagates I/O or serialization errors during writing the log.
     fn set(&self, key: String, value: String) -> Result<()> {
+        // 在这一层加锁了，所以下面的 set 不用考虑锁
         self.writer.lock().unwrap().set(key, value)
     }
 
@@ -114,7 +131,10 @@ impl KvsEngine for KvStore {
     ///
     /// Returns `None` if the given key does not exist.
     fn get(&self, key: String) -> Result<Option<String>> {
+        // 查索引  skipMap 索引不存在，直接返回
         if let Some(cmd_pos) = self.index.get(&key) {
+
+            // 索引中有，拿到位置信息，(id offset length) 去 disk 读， read_command 将 disk 二进制 变成 command
             if let Command::Set { value, .. } = self.reader.read_command(*cmd_pos.value())? {
                 Ok(Some(value))
             } else {
@@ -144,9 +164,18 @@ impl KvsEngine for KvStore {
 /// can read concurrently through multiple `KvStore`s in different
 /// threads.
 struct KvStoreReader {
+    // arc 共享所有权，共享路径对象
     path: Arc<PathBuf>,
+
+    // 安全水位线，记录了最新一次压缩产生的文件代号民，是读线程和写线程之间的信号号
+    // 压缩发生时，旧的日志文件会被合并成一个新的大文件
+    // atomic64 保证了原子性，多个线程可以安全的读取
+    // 作用：防止读取已经失效或被删除的旧文件，如果reader试图访问一个小于 safe_point 的是文件id，或能需要重定向去读新的压缩文件，或者直接报错
     // generation of the latest compaction file
     safe_point: Arc<AtomicU64>,
+
+    // 在读的时候，还要修改reader的位置，但get方法的签名是 &self
+    // 这里还是没太懂
     readers: RefCell<BTreeMap<u64, BufReaderWithPos<File>>>,
 }
 
@@ -171,26 +200,41 @@ impl KvStoreReader {
     /// Read the log file at the given `CommandPos`.
     fn read_and<F, R>(&self, cmd_pos: CommandPos, f: F) -> Result<R>
     where
+        // 定义闭包类型，接收一个受限的文件流，返回任意结果 R
+        // read_and 不关心读出来的数据做什么，只读
         F: FnOnce(io::Take<&mut BufReaderWithPos<File>>) -> Result<R>,
     {
+        // 清理过期文件句柄，如果有压缩发生
         self.close_stale_handles();
 
+        // borrow_mut 拿到独占访问权，可以insert 或者 seek 指针
         let mut readers = self.readers.borrow_mut();
         // Open the file if we haven't opened it in this `KvStoreReader`.
         // We don't use entry API here because we want the errors to be propogated.
+        // 懒加载，如果这个 id 的文件还没打开过，现在打开并存入 缓存
         if !readers.contains_key(&cmd_pos.gen) {
             let reader = BufReaderWithPos::new(File::open(log_path(&self.path, cmd_pos.gen))?)?;
             readers.insert(cmd_pos.gen, reader);
         }
+
+        // 拿到文件 handler
         let reader = readers.get_mut(&cmd_pos.gen).unwrap();
+        // 定位
         reader.seek(SeekFrom::Start(cmd_pos.pos))?;
+        // 读取固定长度
         let cmd_reader = reader.take(cmd_pos.len);
+
+        // 执行回调
+        // 把准备好的，对准了位置的，限制了长度的 reader 交给闭包处理
         f(cmd_reader)
     }
 
     // Read the log file at the given `CommandPos` and deserialize it to `Command`.
     fn read_command(&self, cmd_pos: CommandPos) -> Result<Command> {
+        // 调用底层的读取器 read_and
         self.read_and(cmd_pos, |cmd_reader| {
+            // 传入一个闭包，（回调函数 ）
+            // 给你一个已经对准标准公交车的文件流，把它解析为 json command
             Ok(serde_json::from_reader(cmd_reader)?)
         })
     }
@@ -221,8 +265,11 @@ struct KvStoreWriter {
 impl KvStoreWriter {
     fn set(&mut self, key: String, value: String) -> Result<()> {
         let cmd = Command::set(key, value);
+
+        // writer 当前写到哪个位置了
         let pos = self.writer.pos;
         serde_json::to_writer(&mut self.writer, &cmd)?;
+
         self.writer.flush()?;
         if let Command::Set { key, .. } = cmd {
             if let Some(old_cmd) = self.index.get(&key) {
@@ -240,15 +287,20 @@ impl KvStoreWriter {
 
     fn remove(&mut self, key: String) -> Result<()> {
         if self.index.contains_key(&key) {
+            // 先将命令 log，再append log
             let cmd = Command::remove(key);
             let pos = self.writer.pos;
             serde_json::to_writer(&mut self.writer, &cmd)?;
             self.writer.flush()?;
+
             if let Command::Remove { key } = cmd {
                 let old_cmd = self.index.remove(&key).expect("key not found");
+
+                // set 命令的长度
                 self.uncompacted += old_cmd.value().len;
                 // the "remove" command itself can be deleted in the next compaction
                 // so we add its length to `uncompacted`
+                // remove 命令的长度
                 self.uncompacted += self.writer.pos - pos;
             }
 
