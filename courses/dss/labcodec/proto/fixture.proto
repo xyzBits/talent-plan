@@ -1,16 +1,32 @@
+// proto 文件使用 proto3 语法版本
 syntax = "proto3";
 
+// package 定义用于生成 Rust 模块命名空间
 package fixture;
 
-// A simple protobuf message.
+// 下面定义了一个简单的 protobuf 消息示例，用于演示 prost 生成代码的结构。
+// 注释（中文）：
+// - 该文件将由 `labcodec/build.rs` 在构建阶段调用 prost-build 进行编译，
+//   生成对应的 Rust 结构体与枚举（见 `OUT_DIR` 下生成的 `fixture.rs`）。
+// - 上层示例与测试（`labcodec/src/lib.rs` 的测试）会通过 `include!(concat!(env!("OUT_DIR"), "/fixture.rs"))`
+//   将生成的类型引入到编译单元中。
+
+// Msg: 一个简单的 protobuf 消息示例，包含枚举、基本字段与 repeated 字段。
 message Msg {
+    // Type: 消息类型的枚举示例。枚举值会被生成到 Rust 的枚举类型（带有 prost::Enumeration trait）。
     enum Type {
-        UNKNOWN = 0;
-        PUT = 1;
-        GET = 2;
-        DEL = 3;
+        UNKNOWN = 0; // 未知
+        PUT = 1;     // 写入操作
+        GET = 2;     // 读取操作
+        DEL = 3;     // 删除操作
     }
 
+    // 字段说明：
+    // - `Type type = 1;`：枚举类型，tag 为 1
+    // - `uint64 id = 2;`：无符号 64 位整数字段，tag 为 2
+    // - `string name = 3;`：字符串字段，tag 为 3
+    // - `repeated bytes paylad = 4;`：重复的 bytes 字段，表示一个字节数组的数组，tag 为 4
+    // 注意：`payload` 名拼写示例（此处为 paylad）与生成代码需一致。
     Type type = 1;
     uint64 id = 2;
     string name = 3;
