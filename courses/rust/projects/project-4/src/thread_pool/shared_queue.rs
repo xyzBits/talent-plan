@@ -20,13 +20,18 @@ use log::{debug, error};
 ///
 ///
 pub struct SharedQueueThreadPool {
+    // 发送端，专门发送 装箱的闭包 // 线程池本身不拥有线程，只是任务的发射器
     tx: Sender<Box<dyn FnOnce() + Send + 'static>>,
 }
 
 impl ThreadPool for SharedQueueThreadPool {
     fn new(threads: u32) -> Result<Self> {
+        // 创建一个无界通道
+        // 如果任务生产速度远已于消费速度，内存会爆炸
         let (tx, rx) = channel::unbounded::<Box<dyn FnOnce() + Send + 'static>>();
+
         for _ in 0..threads {
+            // taskReceiver 包装
             let rx = TaskReceiver(rx.clone());
             thread::Builder::new().spawn(move || run_tasks(rx))?;
         }
