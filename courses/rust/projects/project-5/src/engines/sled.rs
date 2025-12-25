@@ -4,7 +4,7 @@ use sled::Db;
 use tokio::prelude::*;
 use tokio::sync::oneshot;
 
-/// Wrapper of `sled::Db`
+/// `sled::Db` 的包装类，实现了 `KvsEngine` trait。
 #[derive(Clone)]
 pub struct SledKvsEngine<P: ThreadPool> {
     pool: P,
@@ -12,10 +12,9 @@ pub struct SledKvsEngine<P: ThreadPool> {
 }
 
 impl<P: ThreadPool> SledKvsEngine<P> {
-    /// Creates a `SledKvsEngine` from `sled::Db`.
+    /// 从 `sled::Db` 创建 `SledKvsEngine`。
     ///
-    /// Operations are run in the given thread pool. `concurrency` specifies the number of
-    /// threads in the thread pool.
+    /// 操作在给定的线程池中运行。`concurrency` 指定线程池中的线程数。
     pub fn new(db: Db, concurrency: u32) -> Result<Self> {
         let pool = P::new(concurrency)?;
         Ok(SledKvsEngine { pool, db })
@@ -23,6 +22,8 @@ impl<P: ThreadPool> SledKvsEngine<P> {
 }
 
 impl<P: ThreadPool> KvsEngine for SledKvsEngine<P> {
+    /// 执行异步 set 操作。
+    /// 逻辑提交给线程池执行，因为 sled 的操作是阻塞的。
     fn set(&self, key: String, value: String) -> Box<dyn Future<Item = (), Error = KvsError> + Send> {
         let db = self.db.clone();
         let (tx, rx) = oneshot::channel();
@@ -42,6 +43,7 @@ impl<P: ThreadPool> KvsEngine for SledKvsEngine<P> {
         )
     }
 
+    /// 执行异步 get 操作。
     fn get(&self, key: String) -> Box<dyn Future<Item = Option<String>, Error = KvsError> + Send> {
         let db = self.db.clone();
         let (tx, rx) = oneshot::channel();
@@ -63,6 +65,7 @@ impl<P: ThreadPool> KvsEngine for SledKvsEngine<P> {
         )
     }
 
+    /// 执行异步 remove 操作。
     fn remove(&self, key: String) -> Box<dyn Future<Item = (), Error = KvsError> + Send> {
         let db = self.db.clone();
         let (tx, rx) = oneshot::channel();

@@ -1,5 +1,5 @@
-//! This module provides various thread pools. All thread pools should implement
-//! the `ThreadPool` trait.
+//! 此模块提供多种线程池实现。所有的线程池都应实现
+//! `ThreadPool` trait。
 
 use crate::Result;
 
@@ -11,22 +11,19 @@ pub use self::naive::NaiveThreadPool;
 pub use self::rayon::RayonThreadPool;
 pub use self::shared_queue::SharedQueueThreadPool;
 
-/// The trait that all thread pools should implement.
+/// 所有线程池必须实现的 trait。
 pub trait ThreadPool: Clone + Send + 'static {
-    /// Creates a new thread pool, immediately spawning the specified number of
-    /// threads.
+    /// 创建一个新的线程池，并立即启动指定数量的线程。
     ///
-    /// Returns an error if any thread fails to spawn. All previously-spawned threads
-    /// are terminated.
+    /// 如果任何线程启动失败，则返回错误。所有先前已启动的线程都会被终止。
     fn new(threads: u32) -> Result<Self>
     where
         Self: Sized;
 
-    /// Spawns a function into the thread pool.
+    /// 将一个函数派发到线程池中执行。
     ///
-    /// Spawning always succeeds, but if the function panics the threadpool continues
-    /// to operate with the same number of threads &mdash; the thread count is not
-    /// reduced nor is the thread pool destroyed, corrupted or invalidated.
+    /// 派发操作总是成功的。如果派发的函数内部发生 panic，
+    /// 线程池应保持运行，且线程数量不应减少。
     fn spawn<F>(&self, job: F)
     where
         F: FnOnce() + Send + 'static;
