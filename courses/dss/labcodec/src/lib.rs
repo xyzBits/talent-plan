@@ -1,130 +1,112 @@
-//! labcodec: Protobuf 编解码的极简封装
-//!
-//! 说明（中文注释）：
-//! - 本 crate 是对 `prost` 的轻量封装，用于在课程实验中对 protobuf 消息进行
-//!   编码与解码。上层 crate（如 `labrpc`、`raft`、`percolator`）通过路径依赖引用
-//!   本库以统一消息序列化格式。
-//! - 依赖说明（在 Cargo.toml 中）：
-//!   - `prost` / `prost-derive`：负责从 `.proto` 生成 Rust 的消息类型（Message trait），
-//!     并提供 `encode`/`decode` 等二进制序列化 API。
-//!   - `prost-build`（build-dependency）：在构建时将 `.proto` 编译为 Rust 源码。
-//!   - 上层 crate 通过 `include!(concat!(env!("OUT_DIR"), "/...rs"))` 将生成的文件
-//!     包含进来，以便在编译期获得由 prost 生成的类型定义。
-//!
-//! 目标：保持接口最小并对 prost 类型做一点类型约束，便于上层代码以统一方式
-//! 进行 `encode` / `decode` 调用。
+//! A thin wrapper of [prost](https://docs.rs/prost/0.6.1/prost/)
+//! 这是一个对 prost 库（Rust 的 Protocol Buffers 实现）的轻量级封装模块。
 
-/// `labcodec` 中可用作消息类型的统一 trait 定义（空 trait，仅做约束）
-///
-/// 目的与用法说明（逐项解释）：
-/// - `pub trait Message: prost::Message + Default {}` 定义了一个新的 trait 名为 `Message`，
-///   要求实现类型同时满足两个条件：
-///   1. `prost::Message`：由 `prost` 提供的 trait，包含 `encode`、`encoded_len`、`decode` 等方法，
-///      这些方法是序列化/反序列化 protobuf 消息所必需的。
-///   2. `Default`：要求消息类型能提供一个默认值（用于测试与空输入解码场景）。
-/// - 该 trait 本身不增加新方法，仅用于在 `encode` / `decode` 函数的泛型约束中使用，
-///   使得上层调用时不必直接引用 `prost::Message`，而能使用 `labcodec::Message` 作为
-///   项目内统一的消息类型别名。这样做利于将来对接口的扩展或替换实现。
+/// A labcodec message.
+/// 定义当前库通用的 Message 特征（Trait）。
+/// 要求：所有实现此特征的类型，必须同时满足 `prost::Message`（基本 Protobuf 功能）和 `Default`（支持默认值）。
 pub trait Message: prost::Message + Default {}
+
+/// 覆盖实现（Blanket Implementation）：
+/// 这是一行非常强大的 Rust 魔法。它表示：只要任何类型 T 满足了 `prost::Message + Default`，
+/// 编译器就会自动通过这行代码，让它也实现我们定义的 `labcodec::Message`。
+/// 这样用户就不需要手动为每个生成的 Protobuf 结构体写 `impl Message for X` 了。
+/// 这个 Message 必须是我定义在当前  crate的 
 impl<T: prost::Message + Default> Message for T {}
 
-/// 将 `prost` 的错误类型在本库中暴露为更短且语义化的别名：`EncodeError`
-///
-/// - `prost::EncodeError`：在调用 `Message::encode` 序列化时可能产生的错误，通常与
-///   序列化缓冲区或消息内部数据无效有关。
+/// A message encoding error.
+/// 类型别名：将 prost 的编码错误类型重新导出。
+/// 作用：解耦。调用者不需要引入 prost crate，直接用 labcodec::EncodeError 即可。
 pub type EncodeError = prost::EncodeError;
 
-/// 将 `prost` 的解码错误类型在本库中暴露为 `DecodeError`
-///
-/// - `prost::DecodeError`：在调用 `Message::decode` 反序列化二进制数据为消息时产生的错误，
-///   例如输入数据不完整或不符合预期的 protobuf 格式。
+/// A message decoding error.
+/// 类型别名：将 prost 的解码错误类型重新导出。
 pub type DecodeError = prost::DecodeError;
 
-/// 将消息编码写入 `Vec<u8>` 的实用函数。
-///
-/// 详细说明：
-/// - 参数 `message`: 实现了 `labcodec::Message` 的消息引用，代表要编码的 protobuf 结构体。
-/// - 参数 `buf`: 用于写入编码后二进制数据的可变 `Vec<u8>`，函数不会分配新的 Vec，
-///   而是将编码内容追加到 `buf` 上（调用方可复用缓冲区以减少分配）。
-/// - 返回：`Result<(), EncodeError>`，成功返回 `Ok(())`，否则返回 prost 的 `EncodeError`。
-///
-/// 内部实现要点：
-/// 1. 通过 `message.encoded_len()` 预留足够容量（`buf.reserve(...)`），以避免多次重新分配。
-/// 2. 调用 `message.encode(buf)` 将二进制数据写入 `buf`。
+/// Encodes the message to a `Vec<u8>`.
+/// 泛型函数：接受任何实现了 Message 特征的类型 M。
+/// 参数 message: 要编码的消息引用。
+/// 参数 buf: 输出缓冲区，编码后的字节会追加到这个 Vec 中。
 pub fn encode<M: Message>(message: &M, buf: &mut Vec<u8>) -> Result<(), EncodeError> {
-    // 预留足够的空间以减少内存重新分配。
+    // 性能优化关键点：
+    // message.encoded_len() 预先计算消息编码后需要的字节数。
+    // buf.reserve() 提前在堆内存中分配足够的空间。
+    // 这避免了在写入数据时 Vec 发生多次扩容（Reallocation）和数据拷贝，显著提高性能。
     buf.reserve(message.encoded_len());
-    // prost::Message::encode 将二进制数据追加到 provided buffer 中。
+
+    // 调用 prost 底层的 encode 方法将数据写入 buf。
+    // `?` 操作符：如果出错则直接返回 Err，成功则继续。
     message.encode(buf)?;
+
+    // 返回 Ok(()) 表示操作成功（Unit 类型）。
     Ok(())
 }
 
-/// 从二进制切片解码出一个消息实例。
-///
-/// 详细说明：
-/// - 参数 `buf`: 包含 protobuf 编码数据的字节切片（通常来自网络或持久化存储）。
-/// - 返回：`Result<M, DecodeError>`，成功时返回消息实例，失败时返回 `prost::DecodeError`。
-///
-/// 注意事项：调用方应保证 `buf` 的边界正确；对于空的 `buf`，如果消息类型有默认值，
-/// `prost` 可能会返回默认实例（这取决于消息定义与 prost 的实现）。
+/// Decodes an message from the buffer.
+/// 解码函数：从字节切片中恢复出消息结构体 M。
 pub fn decode<M: Message>(buf: &[u8]) -> Result<M, DecodeError> {
+    // 直接调用 M 类型（实现了 prost::Message）的 decode 方法。
     M::decode(buf)
 }
 
-#[cfg(test)]
+#[cfg(test)] // 只有在运行 `cargo test` 时才编译以下模块
 mod tests {
+    // 定义一个名为 fixture 的子模块，用于模拟生成的代码
     mod fixture {
         // The generated rust file:
-        // labs6824/target/debug/build/labcodec-hashhashhashhash/out/fixture.rs
-        //
-        // It looks like:
-        //
-        // ```no_run
-        // /// A simple protobuf message.
-        // #[derive(Clone, PartialEq, Message)]
-        // pub struct Msg {
-        //     #[prost(enumeration="msg::Type", tag="1")]
-        //     pub type_: i32,
-        //     #[prost(uint64, tag="2")]
-        //     pub id: u64,
-        //     #[prost(string, tag="3")]
-        //     pub name: String,
-        //     #[prost(bytes, repeated, tag="4")]
-        //     pub paylad: ::std::vec::Vec<Vec<u8>>,
-        // }
-        // pub mod msg {
-        //     #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Enumeration)]
-        //     pub enum Type {
-        //         Unknown = 0,
-        //         Put = 1,
-        //         Get = 2,
-        //         Del = 3,
-        //     }
-        // }
-        // ```
+        // 说明：在真实的 Rust Protobuf 项目中，.proto 文件会被编译成 .rs 文件。
+        // 这些文件通常位于 target/debug/build/.../out/ 目录下。
+        // 下面的 include! 宏就是把生成好的代码直接“复制粘贴”到这里。
+
+        // 这是一个宏，用于动态包含路径下的文件。
+        // env!("OUT_DIR") 获取构建脚本 (build.rs) 指定的输出目录。
+        // 这里假设在这个目录下有一个 fixture.rs 文件（模拟生成的 Protobuf 结构体）。
         include!(concat!(env!("OUT_DIR"), "/fixture.rs"));
     }
 
+    // 引入父模块定义的 encode 和 decode 函数以便测试
     use super::{decode, encode};
 
-    #[test]
+    #[test] // 标记这是一个测试函数
     fn test_basic_encode_decode() {
+        // 1. 创建一个测试消息实例
+        // fixture::Msg 是由 include! 宏引入的生成的结构体
         let msg = fixture::Msg {
+            // 设置字段 type。
+            // `as _` 是 Rust 的类型推断转换，把枚举值转为对应的整数类型（proto 中 enum 其实是 i32）。
+            // r#type 是因为 `type` 是 Rust 关键字，所以用 `r#` 进行原始标识符转义。
             r#type: fixture::msg::Type::Put as _,
             id: 42,
-            name: "the answer".to_owned(),
+            name: "the answer".to_owned(), // 将字符串字面量转为 String
+            // 创建一个二维数组 Vec<Vec<u8>>。
+            // vec![7; 3] 生成 [7, 7, 7]，再重复 2 次。
             paylad: vec![vec![7; 3]; 2],
         };
+
+        // 2. 准备一个空的缓冲区
         let mut buf = vec![];
+
+        // 3. 执行编码：msg -> buf
+        // unwrap() 用于在测试中处理 Result，如果报错直接 panic 导致测试失败。
         encode(&msg, &mut buf).unwrap();
+
+        // 4. 执行解码：buf -> msg1
+        // Rust 编译器会自动推断 msg1 的类型应该是 fixture::Msg
         let msg1 = decode(&buf).unwrap();
+
+        // 5. 断言：验证解码后的对象和原始对象完全相等（需要结构体实现 PartialEq）
         assert_eq!(msg, msg1);
     }
 
     #[test]
     fn test_default() {
+        // 测试 Protobuf 的默认行为：空字节流应该解码为默认值。
         let msg = fixture::Msg::default();
+
+        // 传入空切片 &[] 进行解码
         let msg1 = decode(&[]).unwrap();
+
+        // 验证空切片解码出来的对象是否等于 Default::default()
+        // 这也验证了我们在最上面定义的 trait Message: Default 约束的必要性。
         assert_eq!(msg, msg1);
     }
 }
